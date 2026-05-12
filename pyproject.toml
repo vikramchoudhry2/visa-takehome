@@ -1,0 +1,42 @@
+[project]
+name = "vertex-brief-review"
+version = "0.1.0"
+description = "AI agent that reviews Vertex client briefings for formatting, grammar, and structural compliance"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "streamlit>=1.39.0",
+    "python-docx>=1.1.2",
+    "anthropic>=0.39.0",
+    "pydantic>=2.9.0",
+    "pyspellchecker>=0.8.1",
+    "rapidfuzz>=3.10.0",
+    "pandas>=2.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.6.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["core*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]
