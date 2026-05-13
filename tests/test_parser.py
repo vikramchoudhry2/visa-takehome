@@ -263,6 +263,58 @@ def test_messy_stacked_table_key_facts_in_label_cell_and_pipe_topics() -> None:
     assert not any("Client Name" in f.message for f in missing)
 
 
+def test_attendee_bio_nested_table_cell_text_is_extracted() -> None:
+    """Regression: Bio copy is often authored inside a nested Word table in the
+    Bio cell. Paragraph-only reads miss it, so structure/semantic see an empty Bio."""
+    from io import BytesIO
+
+    from docx import Document
+    from docx.shared import Inches
+
+    from core.checkers.semantic import _format_meeting_attendee_table_for_semantic
+    from tests.fixtures.builder import _png_bytes
+
+    doc = Document()
+    doc.add_paragraph("Stub Co Meeting Brief")
+    outer = doc.add_table(rows=2, cols=2)
+    outer.rows[0].cells[0].text = "Client Name & Type:"
+    outer.rows[0].cells[1].text = "Stub Co, issuer"
+    outer.rows[1].cells[0].text = (
+        "Who am I meeting with?\n\nWho is joining me from Vertex? Alex Smith, SVP, NA"
+    )
+    right_cell = outer.rows[1].cells[1]
+    right_cell.text = ""
+    nested = right_cell.add_table(rows=2, cols=4)
+    for i, h in enumerate(
+        ("Name/Titles", "Photo", "Bio", "Previously met with Vertex exec?")
+    ):
+        nested.rows[0].cells[i].text = h
+    nested.rows[1].cells[0].text = (
+        "Gerri Kellman (GEH-ree)\nGeneral Counsel\nMs. Kellman\n"
+        "gerri.kellman@example.com"
+    )
+    run = nested.rows[1].cells[1].paragraphs[0].add_run()
+    run.add_picture(BytesIO(_png_bytes()), width=Inches(0.5))
+    bio_cell = nested.rows[1].cells[2]
+    bio_cell.text = ""
+    inner_bio = bio_cell.add_table(rows=1, cols=1)
+    inner_bio.rows[0].cells[0].text = (
+        "Gerri Kellman serves as General Counsel and oversees legal and compliance."
+    )
+    nested.rows[1].cells[3].text = ""
+    buf = BytesIO()
+    doc.save(buf)
+    brief = parse_brief(buf.getvalue())
+    sec = brief.section("11_meeting_with")
+    assert sec is not None and sec.present
+    four_col = next(t for t in sec.tables if t.num_cols == 4 and t.num_rows >= 2)
+    bio_extracted = four_col.rows[1][2].strip()
+    assert "Gerri Kellman serves" in bio_extracted
+    structured = _format_meeting_attendee_table_for_semantic(sec)
+    assert "Bio:\nGerri Kellman serves" in structured
+    assert "Bio:\n(empty)" not in structured
+
+
 def test_missing_section_marked_not_present() -> None:
     from io import BytesIO
 

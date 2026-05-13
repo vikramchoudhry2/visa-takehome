@@ -685,6 +685,48 @@ def _section_from_blocks(
     )
 
 
+def _cell_text_in_document_order(cell: _Cell) -> str:
+    """Plain text from a table cell, including paragraphs inside nested tables.
+
+    Word often wraps body copy in a nested ``<w:tbl>`` inside a cell. The
+    high-level ``cell.paragraphs`` API only lists direct child paragraphs,
+    so those cells would otherwise parse as empty and semantic checks
+    falsely report an empty Bio column.
+    """
+    parts: list[str] = []
+    for child in cell._tc.iterchildren():
+        tag = child.tag
+        if tag == qn("w:p"):
+            p = Paragraph(child, cell)
+            if p.text.strip():
+                parts.append(p.text)
+        elif tag == qn("w:tbl"):
+            inner = Table(child, cell)
+            for inner_row in inner.rows:
+                for inner_cell in inner_row.cells:
+                    nested = _cell_text_in_document_order(inner_cell)
+                    if nested.strip():
+                        parts.append(nested)
+    return "\n".join(parts).strip()
+
+
+def _cell_has_inline_image_deep(cell: _Cell) -> bool:
+    """True if this cell or any nested table cell contains an inline image."""
+    for child in cell._tc.iterchildren():
+        tag = child.tag
+        if tag == qn("w:p"):
+            p = Paragraph(child, cell)
+            if _has_inline_image(p._element):
+                return True
+        elif tag == qn("w:tbl"):
+            inner = Table(child, cell)
+            for inner_row in inner.rows:
+                for inner_cell in inner_row.cells:
+                    if _cell_has_inline_image_deep(inner_cell):
+                        return True
+    return False
+
+
 def _iter_table_cells(table: Table) -> Iterator[_Cell]:
     """Yield each logical table cell once, row-major.
 
@@ -711,11 +753,9 @@ def _parse_table(table: Table) -> ParsedTable:
         cells: list[str] = []
         cell_imgs: list[bool] = []
         for cell in row.cells:
-            cell_text = "\n".join(p.text for p in cell.paragraphs)
+            cell_text = _cell_text_in_document_order(cell)
             cells.append(cell_text)
-            cell_has_img = any(
-                _has_inline_image(par._element) for par in cell.paragraphs
-            )
+            cell_has_img = _cell_has_inline_image_deep(cell)
             cell_imgs.append(cell_has_img)
             if cell_has_img:
                 has_images = True
