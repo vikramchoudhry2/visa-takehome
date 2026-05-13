@@ -244,9 +244,10 @@ SEMANTIC_RULES: tuple[SemanticRule, ...] = (
             "If the table is not present in the text, return passed=true."
         ),
         user_prompt_template=(
-            "Evaluate the bios in this attendee section. Each row's bio "
-            "is in column 3 (between the photo column and the 'previously "
-            "met' column). Ignore the last column for this rule.\n\n"
+            "Evaluate the bios in this attendee section. The excerpt may "
+            "use explicit `Bio:` blocks per row—use only that text for bio "
+            "quality (not Name/Titles or Previously met). If unlabeled, "
+            "column 3 is Bio (between Photo and Previously met).\n\n"
             "<section>\n{section_text}\n</section>"
         ),
     ),
@@ -257,19 +258,25 @@ SEMANTIC_RULES: tuple[SemanticRule, ...] = (
         system_prompt=(
             f"{_BASE_INSTRUCTIONS}\n\n"
             "RULE: For the 'Previously met with Vertex exec?' column (last column of "
-            "the attendee table): (1) If the cell is empty or whitespace only for a row "
-            "that has an attendee name or bio text, flag it—the writer must choose an "
-            "option or add text. (2) For non-empty cells, the text must make clear "
-            "WHO (which exec or counterpart), WHEN (month+year or date), and WHERE "
-            "(forum, city, or channel), unless it explicitly states there was no prior "
-            "Vertex exec meeting. "
-            "A bare 'No' or 'Yes' without detail fails when a prior meeting is implied. "
-            "Phrases like 'No prior meeting with Vertex executives' PASS without who/when/where.\n"
+            "the attendee table), evaluate **only cells that already contain non-empty "
+            "text** (substance and clarity).\n"
+            "**Out of scope — never emit a finding:** empty or whitespace-only cells, "
+            "or excerpts where that column shows the literal placeholder `(empty)`. "
+            "Automated structure checks already flag missing text per row; duplicating "
+            "that here is forbidden.\n"
+            "For non-empty cells, the text must make clear WHO (which exec or "
+            "counterpart), WHEN (month+year or date), and WHERE (forum, city, or "
+            "channel), unless it explicitly states there was no prior Vertex exec "
+            "meeting. A bare 'No' or 'Yes' without detail fails when a prior meeting "
+            "is implied. Phrases like 'No prior meeting with Vertex executives' PASS "
+            "without who/when/where.\n"
             "Do not flag the 7-line cap for this column—that is enforced separately."
         ),
         user_prompt_template=(
             "Evaluate the 'Previously met with Vertex exec?' column for each attendee "
-            "row in this section text (last column of the table).\n\n"
+            "row that has real text in that column. Skip rows whose block is `(empty)` "
+            "or only whitespace. When the excerpt uses explicit "
+            "`Previously met with Vertex exec?:` blocks, use only those lines.\n\n"
             "<section>\n{section_text}\n</section>"
         ),
     ),
@@ -323,9 +330,13 @@ SEMANTIC_RULES: tuple[SemanticRule, ...] = (
             "If the attendee value area is completely empty (only the section heading "
             "was parsed), return passed=true with no findings—automated checks already "
             "flag the empty state.\n"
-            "FAIL vague lines ('someone from Vertex', 'TBD') or a bare name with no title/team. "
-            "Exact line-format regex is enforced separately—focus on whether a reader "
-            "would understand who is attending and in what capacity."
+            "FAIL vague lines ('someone from Vertex', 'TBD') or a bare name with no title/team "
+            "only when each line already satisfies the automated '[Name], [Title, Team]' "
+            "pattern. **Never** flag comma placement, missing comma after the name, or "
+            "other regex/format violations—`VERTEX_ATTENDEE_FORMAT` already covers those; "
+            "duplicate format feedback is forbidden.\n"
+            "For lines that already match that automated pattern, focus on whether a "
+            "reader would understand who is attending and in what capacity."
         ),
         user_prompt_template=(
             "Evaluate this 'Who is joining me from Vertex?' section.\n\n"
