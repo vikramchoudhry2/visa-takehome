@@ -234,15 +234,19 @@ SEMANTIC_RULES: tuple[SemanticRule, ...] = (
             "RULE: Each attendee Bio cell (column 3) must read as 1-2 sentences with "
             "substance: current role plus relevant background for the meeting—not "
             "placeholders ('Short bio', '(TBD)').\n"
+            "COLUMN DISAMBIGUATION: The last column is 'Previously met with Vertex exec?'. "
+            "If that column is empty or only a dropdown placeholder, do NOT treat it as "
+            "the Bio or claim the Bio is empty when another cell clearly holds role/background text.\n"
             "Automated checks cap bio length at 7 visible lines in the Bio column "
-            "(soft-wrap budget tuned for narrow table cells), and validate Name/Titles "
-            "fields and photo presence; here, judge sentence quality and substance only. "
+            "(soft-wrap budget tuned for narrow table cells), validate Name/Titles "
+            "fields and photo presence, and flag an empty 'Previously met' cell; here, "
+            "judge sentence quality and substance of the Bio text only. "
             "If the table is not present in the text, return passed=true."
         ),
         user_prompt_template=(
             "Evaluate the bios in this attendee section. Each row's bio "
             "is in column 3 (between the photo column and the 'previously "
-            "met' column).\n\n"
+            "met' column). Ignore the last column for this rule.\n\n"
             "<section>\n{section_text}\n</section>"
         ),
     ),
@@ -252,11 +256,14 @@ SEMANTIC_RULES: tuple[SemanticRule, ...] = (
         display_name="Previously met - who, when, where",
         system_prompt=(
             f"{_BASE_INSTRUCTIONS}\n\n"
-            "RULE: For each non-empty cell in the 'Previously met with Vertex exec?' "
-            "column (last column of the attendee table), the text must make clear "
-            "WHO (which exec or meeting counterpart), WHEN (at least a month+year "
-            "or specific date), and WHERE (forum, city, or channel). "
-            "A bare 'No' or 'Yes' without detail is a violation when it implies a meeting occurred. "
+            "RULE: For the 'Previously met with Vertex exec?' column (last column of "
+            "the attendee table): (1) If the cell is empty or whitespace only for a row "
+            "that has an attendee name or bio text, flag it—the writer must choose an "
+            "option or add text. (2) For non-empty cells, the text must make clear "
+            "WHO (which exec or counterpart), WHEN (month+year or date), and WHERE "
+            "(forum, city, or channel), unless it explicitly states there was no prior "
+            "Vertex exec meeting. "
+            "A bare 'No' or 'Yes' without detail fails when a prior meeting is implied. "
             "Phrases like 'No prior meeting with Vertex executives' PASS without who/when/where.\n"
             "Do not flag the 7-line cap for this column—that is enforced separately."
         ),

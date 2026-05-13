@@ -189,6 +189,26 @@ def test_attendee_title_accepts_broader_keywords() -> None:
     assert "ATTENDEE_MISSING_TITLE" not in rule_ids
 
 
+def test_attendee_previously_met_empty_is_flagged() -> None:
+    """An unfilled last column must not be misread as an empty Bio elsewhere."""
+    brief = _build_minimal_brief_with_attendee_table(
+        headers=("Name/Titles", "Photo", "Bio", "Previously met with Vertex exec?"),
+        rows=[
+            (
+                "Gerri Kellman (GEH-ree)\nGeneral Counsel\nMs. Kellman\n"
+                "gerri.kellman@example.com",
+                _png_bytes(),
+                "Gerri Kellman serves as General Counsel and oversees legal and compliance.",
+                "",
+            )
+        ],
+    )
+    rule_ids = {f.rule_id for f in check_meeting_with(brief)}
+    assert "ATTENDEE_MET_EMPTY" in rule_ids
+    met_msgs = [f.message for f in check_meeting_with(brief) if f.rule_id == "ATTENDEE_MET_EMPTY"]
+    assert met_msgs and "Previously met with Vertex exec?" in met_msgs[0]
+
+
 def test_attendee_bio_long_single_paragraph_exceeds_seven_visual_lines() -> None:
     """Bio is often one Word-wrapped paragraph with no newlines; line count
     must use a narrow column budget (not ``CHARS_PER_LINE``) or long bios

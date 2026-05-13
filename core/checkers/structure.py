@@ -745,6 +745,19 @@ def check_meeting_with(brief: Brief) -> list[Finding]:
                     message=f'Attendee row {row_idx}: "Previously met" must not exceed 7 lines.',
                 )
             )
+        if not met_cell.strip():
+            findings.append(
+                Finding(
+                    section_id="11_meeting_with",
+                    column="section",
+                    rule_id="ATTENDEE_MET_EMPTY",
+                    message=(
+                        f'Attendee row {row_idx}: "Previously met with Vertex exec?" '
+                        "is empty; Add text (who/when/where, or "
+                        "state there was no prior Vertex exec meeting)."
+                    ),
+                )
+            )
     return findings
 
 
