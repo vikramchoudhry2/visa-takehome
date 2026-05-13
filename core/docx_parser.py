@@ -4,14 +4,32 @@ Strategy:
 1. Walk the document body in document order, interleaving paragraphs and
    tables (python-docx exposes them via the underlying XML element tree).
 2. Identify section boundaries by fuzzy-matching paragraph text against
-   the canonical template headers from `SECTION_TEMPLATE`.
+   each body header title (see `BODY_HEADER_IDS_IN_ORDER` and
+   `_body_header_display_title`).
 3. Bucket subsequent paragraphs and tables into the active section until
    the next header is found.
+3b. Some Word templates place sections 03–07 (and beyond) in one 2-column
+   table (``<label> | <value>``). The parser splits such tables into
+   synthetic per-section rows. **Messy real files** often merge the Key
+   Facts umbrella label with long body copy in the same cell, use
+   "President" instead of "executive", or put two attendee questions in one
+   cell; we match headers on the **first line** / **case-insensitive prefix**
+   of the left cell and skip non-matching rows instead of rejecting the
+   whole table.
 4. Special-case section 01 (header icon) and section 02 (title) — these
    live in the header / first paragraph respectively, not as their own
    labeled body sections.
-5. Always emit all 12 sections in template order; sections we couldn't
+5. Always emit all 15 sections in template order; sections we couldn't
    find are emitted with `present=False`.
+6. The Word template exposes one body header, "What are the key facts
+   about the client?"; that text is the **umbrella section title** in the
+   Word file, not a separate row in the review output table. The parser
+   buckets that block under an internal parse id, then splits it into
+   four review-table rows (8A–8D). Combined Key Facts tables are attached
+   to the 8A section so structure checkers can still read label cells.
+   Subsections may appear as ``Label: body`` paragraphs in one cell, or as
+   rows in a 2-column table (label cell | value cell), including a blank
+   label row when Vertex Overview copy sits in the value column only.
 
 Fuzzy matching uses rapidfuzz with a conservative score threshold so
 small wording deltas (e.g., en-dash vs hyphen, smart quotes) don't break
@@ -20,6 +38,7 @@ section detection.
 
 from __future__ import annotations
 
+import functools
 import io
 import re
 from collections.abc import Iterator
@@ -40,6 +59,11 @@ from core.models import (
     Section,
 )
 
+# Body header "What are the key facts…" is parsed into this internal bucket
+# (not a template row id), then split into rows 08a–08d for the review table.
+KF_BODY_PARSE_ID = "__kf_body__"
+KEY_FACTS_HEADER_DISPLAY = "What are the key facts about the client?"
+
 FUZZY_HEADER_THRESHOLD = 82
 
 BODY_HEADER_IDS_IN_ORDER: tuple[str, ...] = (
@@ -48,13 +72,18 @@ BODY_HEADER_IDS_IN_ORDER: tuple[str, ...] = (
     "05_client_markets",
     "06_client_share",
     "07_current_business",
-    "08_key_facts",
+    KF_BODY_PARSE_ID,
     "09_exec_messages",
     "10_client_topics",
     "11_meeting_with",
     "12_vertex_attendees",
 )
 
+# Notable Changes is a subsection inside Key Facts, not a standalone body header.
+_NOTABLE_CHANGES_BODY_RE = re.compile(
+    r"notable\s+changes\s*:\s*(.*)$",
+    re.IGNORECASE | re.DOTALL,
+)
 
 @dataclass
 class _Block:
@@ -63,6 +92,8 @@ class _Block:
     kind: str
     paragraph: Paragraph | None = None
     table: Table | None = None
+    # Synthetic 2-col row extracted from a stacked template table (label | value).
+    synthetic_value: tuple[str, str] | None = None
 
 
 def parse_brief(source: bytes | io.BytesIO | str) -> Brief:
@@ -77,11 +108,23 @@ def _parse_document(doc: DocxDocument) -> Brief:
     blocks = list(_iter_body_blocks(doc))
     header_images = _extract_header_images(doc)
     title_text, title_idx = _extract_title(blocks)
-    full_text = _collect_full_text(blocks, doc)
+    header_plain = _collect_header_paragraph_text(doc)
+    body_plain = _collect_full_text(blocks, doc)
+    full_text = "\n".join(p for p in (header_plain, body_plain) if p.strip())
 
     body_section_blocks = _split_body_into_sections(
         blocks, start_idx=title_idx + 1 if title_idx is not None else 0
     )
+
+    kf_blocks = body_section_blocks.get(KF_BODY_PARSE_ID)
+    key_facts_combined: Section | None = None
+    if kf_blocks:
+        key_facts_combined = _section_from_blocks(
+            KF_BODY_PARSE_ID,
+            KEY_FACTS_HEADER_DISPLAY,
+            0,
+            kf_blocks,
+        )
 
     sections: list[Section] = []
     for order, (sid, display_title) in enumerate(SECTION_TEMPLATE, start=1):
@@ -105,6 +148,47 @@ def _parse_document(doc: DocxDocument) -> Brief:
                     raw_text=title_text or "",
                 )
             )
+        elif sid == "08a_business_overview":
+            sections.append(
+                _key_facts_subsection(
+                    key_facts_combined,
+                    sid,
+                    display_title,
+                    order,
+                    category="business overview",
+                    key_facts_tables=(
+                        key_facts_combined.tables
+                        if key_facts_combined is not None
+                        else ()
+                    ),
+                )
+            )
+        elif sid == "08b_competition":
+            sections.append(
+                _key_facts_subsection(
+                    key_facts_combined,
+                    sid,
+                    display_title,
+                    order,
+                    category="competition",
+                )
+            )
+        elif sid == "08c_vertex_overview":
+            sections.append(
+                _key_facts_subsection(
+                    key_facts_combined,
+                    sid,
+                    display_title,
+                    order,
+                    category="vertex overview",
+                )
+            )
+        elif sid == "08d_notable_changes":
+            sections.append(
+                _key_facts_subsection_notable(
+                    key_facts_combined, sid, display_title, order
+                )
+            )
         else:
             blocks_for_section = body_section_blocks.get(sid)
             if not blocks_for_section:
@@ -124,6 +208,9 @@ def _parse_document(doc: DocxDocument) -> Brief:
         header_images=tuple(header_images),
         sections=tuple(sections),
         full_text=full_text,
+        key_facts_combined_raw=(
+            key_facts_combined.raw_text if key_facts_combined is not None else ""
+        ),
     )
 
 
@@ -193,6 +280,16 @@ def _extract_title(blocks: list[_Block]) -> tuple[str | None, int | None]:
     return None, None
 
 
+def _collect_header_paragraph_text(doc: DocxDocument) -> str:
+    """Plain text from the first section header (for spelling/formatting on header copy)."""
+    parts: list[str] = []
+    for section in doc.sections:
+        for p in section.header.paragraphs:
+            if p.text.strip():
+                parts.append(p.text)
+    return "\n".join(parts)
+
+
 def _collect_full_text(blocks: list[_Block], doc: DocxDocument) -> str:
     parts: list[str] = []
     for block in blocks:
@@ -209,6 +306,270 @@ def _collect_full_text(blocks: list[_Block], doc: DocxDocument) -> str:
     return "\n".join(parts)
 
 
+def _cell_plain_text(cell: _Cell) -> str:
+    return "\n".join(p.text for p in cell.paragraphs if p.text).strip()
+
+
+def _body_header_display_title(section_id: str) -> str:
+    """Display string used for fuzzy-matching a body section header."""
+    if section_id == KF_BODY_PARSE_ID:
+        return KEY_FACTS_HEADER_DISPLAY
+    for sid, title in SECTION_TEMPLATE:
+        if sid == section_id:
+            return title
+    raise KeyError(section_id)
+
+
+def _best_header_fuzzy(text: str) -> tuple[str | None, int]:
+    """Return (best matching section id, score) for fuzzy header matching."""
+    stripped = text.strip()
+    if not stripped:
+        return None, 0
+    normalized = _normalize(stripped)
+    best_id: str | None = None
+    best_score = 0
+    for sid in BODY_HEADER_IDS_IN_ORDER:
+        target = _normalize(_body_header_display_title(sid))
+        score = fuzz.ratio(normalized, target)
+        if score > best_score:
+            best_score = score
+            best_id = sid
+    return best_id, best_score
+
+
+@functools.cache
+def _body_header_specs_longest_first() -> tuple[tuple[str, str], ...]:
+    """Template (section_id, display title) pairs, longest title first for prefix checks."""
+    return tuple(
+        sorted(
+            ((sid, _body_header_display_title(sid)) for sid in BODY_HEADER_IDS_IN_ORDER),
+            key=lambda x: len(x[1]),
+            reverse=True,
+        )
+    )
+
+
+def _line_header_match(line: str) -> tuple[str | None, int]:
+    """Match a single line or short span to a body header (prefix, then fuzzy)."""
+    line_st = line.strip()
+    if not line_st:
+        return None, 0
+    lower = line_st.lower()
+    for sid, display in _body_header_specs_longest_first():
+        dlow = display.lower()
+        if lower.startswith(dlow):
+            return sid, 100
+    return _best_header_fuzzy(line_st)
+
+
+def _remainder_after_display_prefix(line: str, display: str) -> str:
+    """Strip a leading template display title (case-insensitive) from ``line``."""
+    s, d = line.strip(), display.strip()
+    if s.lower().startswith(d.lower()):
+        return s[len(d) :].strip()
+    return s
+
+
+def _dedupe_value_right(left: str, right: str) -> str:
+    r = right.strip()
+    if not r or r == left.strip():
+        return ""
+    return r
+
+
+_COMPOUND_HEADER_LINE_MAX_CHARS = 200
+_MIN_CHARS_BEFORE_EMBEDDED_CLIENT_TOPICS = 8
+
+
+def _try_compound_two_line_headers(left: str, right: str) -> list[tuple[str, str, str]]:
+    """Two stacked questions in one cell (e.g. Who am I… + Who is joining…)."""
+    lines = [ln.strip() for ln in left.splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return []
+    l0, l1 = lines[0], lines[1]
+    if len(l0) > _COMPOUND_HEADER_LINE_MAX_CHARS:
+        return []
+    if len(l1) > _COMPOUND_HEADER_LINE_MAX_CHARS:
+        return []
+    m0_sid, m0_sc = _line_header_match(l0)
+    m1_sid, m1_sc = _line_header_match(l1)
+    if (
+        m0_sid is None
+        or m1_sid is None
+        or m0_sid == m1_sid
+        or m0_sc < FUZZY_HEADER_THRESHOLD
+        or m1_sc < FUZZY_HEADER_THRESHOLD
+    ):
+        return []
+    disp1 = _body_header_display_title(m1_sid)
+    v1 = _remainder_after_display_prefix(l1, disp1)
+    tail = "\n".join(lines[2:]).strip()
+    vr = _dedupe_value_right(left, right)
+    val_second = "\n".join(x for x in (v1, tail, vr) if x)
+    return [(m0_sid, l0, ""), (m1_sid, disp1, val_second)]
+
+
+@dataclass(frozen=True)
+class _LeftCellHeaderPick:
+    section_id: str
+    score: int
+    label: str
+    remainder: str
+
+
+def _pick_header_from_left_cell(left: str) -> _LeftCellHeaderPick | None:
+    """Prefer a header on the first line when the cell also contains long body copy."""
+    stripped = left.strip()
+    if not stripped:
+        return None
+    parts = stripped.split("\n", 1)
+    first = parts[0].strip()
+    after_first = parts[1].strip() if len(parts) > 1 else ""
+    candidates: list[tuple[str, str]] = [(first, after_first)]
+    if stripped != first:
+        candidates.append((stripped, ""))
+    best: _LeftCellHeaderPick | None = None
+    for label, remainder in candidates:
+        sid, score = _line_header_match(label)
+        if sid is None or score == 0:
+            continue
+        cand = _LeftCellHeaderPick(
+            section_id=sid, score=score, label=label, remainder=remainder
+        )
+        if best is None or score > best.score or (
+            score == best.score and len(label) < len(best.label)
+        ):
+            best = cand
+    return best
+
+
+def _physical_row_to_stack_entries(left: str, right: str) -> list[tuple[str, str, str]]:
+    compound = _try_compound_two_line_headers(left, right)
+    if compound:
+        return compound
+    picked = _pick_header_from_left_cell(left)
+    if picked is None or picked.score < FUZZY_HEADER_THRESHOLD:
+        return []
+    vr = _dedupe_value_right(left, right)
+    body = "\n".join(x for x in (picked.remainder, vr) if x)
+    return _split_embedded_template_headers(picked.section_id, picked.label, body)
+
+
+def _split_embedded_template_headers(
+    primary_sid: str, primary_label: str, combined: str
+) -> list[tuple[str, str, str]]:
+    """When one cell holds executive messages then client topics (pipe-separated), split."""
+    if primary_sid != "09_exec_messages" or not combined.strip():
+        return [(primary_sid, primary_label, combined)]
+    disp10 = _body_header_display_title("10_client_topics")
+    m = re.search(re.escape(disp10), combined, flags=re.IGNORECASE)
+    if m is None or m.start() < _MIN_CHARS_BEFORE_EMBEDDED_CLIENT_TOPICS:
+        return [(primary_sid, primary_label, combined)]
+    exec_body = combined[: m.start()].strip()
+    topics_body = combined[m.end() :].strip()
+    if not topics_body:
+        return [(primary_sid, primary_label, combined)]
+    out: list[tuple[str, str, str]] = [(primary_sid, primary_label, exec_body)]
+    out.append(("10_client_topics", disp10, topics_body))
+    return out
+
+
+def _merge_stack_rows_by_section(rows: list[tuple[str, str, str]]) -> list[tuple[str, str, str]]:
+    """Merge duplicate section ids (multiple physical rows) preserving first-seen order."""
+    order: list[str] = []
+    acc: dict[str, tuple[str, str, str]] = {}
+    for sid, lab, val in rows:
+        if sid not in acc:
+            order.append(sid)
+            acc[sid] = (sid, lab, val)
+            continue
+        _prev_sid, prev_lab, prev_val = acc[sid]
+        merged_val = "\n".join(x for x in (prev_val, val) if x.strip())
+        acc[sid] = (sid, prev_lab, merged_val)
+    return [acc[s] for s in order]
+
+
+def _classify_nested_table(table: Table) -> str | None:
+    """Best-effort: which section_id does this nested table belong to?
+
+    Looks at the header row. Returns ``None`` when no confident match —
+    callers fall back to the last stack entry from the same physical row.
+    """
+    if not table.rows:
+        return None
+    first_row = " | ".join(c.text.strip().lower() for c in table.rows[0].cells)
+    if (
+        "name/titles" in first_row
+        or "previously met" in first_row
+        or ("photo" in first_row and "bio" in first_row)
+    ):
+        return "11_meeting_with"
+    return None
+
+
+def _stacked_two_col_template_table(
+    table: Table,
+) -> list[tuple[str, str, str, tuple[Table, ...]]] | None:
+    """Split a 2-column table into synthetic ``(section_id, label, value, nested_tables)`` rows.
+
+    Some templates put the entire brief inside one outer 2-column table
+    where the right cell can hold *nested* tables (e.g. the 4-column
+    attendee table for section 11). We surface those nested tables on
+    each stack entry so structure checkers can inspect them as real
+    `ParsedTable` objects rather than flattened text.
+
+    Tolerates label+body merged in the left cell, optional ``President`` vs
+    ``executive`` wording, two attendee questions in one cell, and non-matching
+    rows (skipped) once at least one header row matched.
+    """
+    rows_out: list[tuple[str, str, str, tuple[Table, ...]]] = []
+    for row in table.rows:
+        if len(row.cells) < 2:
+            return None
+        left = _cell_plain_text(row.cells[0])
+        right_cell = row.cells[1]
+        right = _cell_plain_text(right_cell)
+        entries = _physical_row_to_stack_entries(left, right)
+        if not entries:
+            continue
+        nested = tuple(right_cell.tables)
+        # Route each nested table to a specific section when its header
+        # content classifies cleanly; otherwise default to the last
+        # entry from this physical row.
+        entry_sids = [sid for sid, _, _ in entries]
+        per_entry_nested: dict[int, list[Table]] = {i: [] for i in range(len(entries))}
+        for nt in nested:
+            classified = _classify_nested_table(nt)
+            if classified is not None and classified in entry_sids:
+                target_idx = entry_sids.index(classified)
+            else:
+                target_idx = len(entries) - 1
+            per_entry_nested[target_idx].append(nt)
+        for idx, (sid, lab, val) in enumerate(entries):
+            attach = tuple(per_entry_nested[idx])
+            rows_out.append((sid, lab, val, attach))
+    if not rows_out:
+        return None
+    return _merge_stack_rows_with_nested(rows_out)
+
+
+def _merge_stack_rows_with_nested(
+    rows: list[tuple[str, str, str, tuple[Table, ...]]],
+) -> list[tuple[str, str, str, tuple[Table, ...]]]:
+    """Same as `_merge_stack_rows_by_section` but preserves nested tables."""
+    order: list[str] = []
+    acc: dict[str, tuple[str, str, str, tuple[Table, ...]]] = {}
+    for sid, lab, val, nested in rows:
+        if sid not in acc:
+            order.append(sid)
+            acc[sid] = (sid, lab, val, nested)
+            continue
+        _prev_sid, prev_lab, prev_val, prev_nested = acc[sid]
+        merged_val = "\n".join(x for x in (prev_val, val) if x.strip())
+        acc[sid] = (sid, prev_lab, merged_val, prev_nested + nested)
+    return [acc[s] for s in order]
+
+
 def _split_body_into_sections(
     blocks: list[_Block], start_idx: int
 ) -> dict[str, list[_Block]]:
@@ -217,6 +578,22 @@ def _split_body_into_sections(
     current_id: str | None = None
 
     for block in blocks[start_idx:]:
+        if block.kind == "table":
+            stacked = _stacked_two_col_template_table(block.table)
+            if stacked is not None:
+                for sid, left, right, nested in stacked:
+                    bucket = section_buckets.setdefault(sid, [])
+                    bucket.append(
+                        _Block(
+                            kind="synthetic_value",
+                            synthetic_value=(left, right),
+                        )
+                    )
+                    for nt in nested:
+                        bucket.append(_Block(kind="table", table=nt))
+                current_id = stacked[-1][0]
+                continue
+
         matched_id = _match_block_to_header(block)
         if matched_id is not None and matched_id != current_id:
             current_id = matched_id
@@ -233,27 +610,16 @@ def _match_block_to_header(block: _Block) -> str | None:
     """Return the section id this block is a header for, or None.
 
     Matches if the block is a paragraph whose text closely resembles a
-    template header. Tables are never headers. Header text may also
-    appear inside the first cell of a 2-col table for sections 3-7; we
-    don't treat those as header markers because they're already inside
-    the section body.
+    template header. Tables are not paragraph headers; stacked 2-column
+    tables whose first column repeats template titles are handled in
+    `_split_body_into_sections` via `_stacked_two_col_template_table`.
     """
-    if block.kind != "paragraph":
+    if block.kind != "paragraph" or block.paragraph is None:
         return None
     text = block.paragraph.text.strip()
     if not text:
         return None
-    normalized = _normalize(text)
-    best_id: str | None = None
-    best_score = 0
-    for sid, display_title in SECTION_TEMPLATE:
-        if sid not in BODY_HEADER_IDS_IN_ORDER:
-            continue
-        target = _normalize(display_title)
-        score = fuzz.ratio(normalized, target)
-        if score > best_score:
-            best_score = score
-            best_id = sid
+    best_id, best_score = _best_header_fuzzy(text)
     if best_score >= FUZZY_HEADER_THRESHOLD:
         return best_id
     return None
@@ -278,6 +644,13 @@ def _section_from_blocks(
     images: list[ImageRef] = []
 
     for block in blocks:
+        if block.kind == "synthetic_value":
+            if block.synthetic_value is not None:
+                label, value = block.synthetic_value
+                text_parts.append(label)
+                text_parts.append(value)
+                tables.append(ParsedTable(rows=((label, value),), has_images=False))
+            continue
         if block.kind == "paragraph":
             p = block.paragraph
             txt = p.text
@@ -287,7 +660,7 @@ def _section_from_blocks(
                     bullets.append(txt.strip())
             for _shape in _iter_inline_shapes(p._element):
                 images.append(ImageRef(location="body"))
-        else:
+        elif block.kind == "table" and block.table is not None:
             tbl = block.table
             tables.append(_parse_table(tbl))
             for cell in _iter_table_cells(tbl):
@@ -313,10 +686,17 @@ def _section_from_blocks(
 
 
 def _iter_table_cells(table: Table) -> Iterator[_Cell]:
+    """Yield each logical table cell once, row-major.
+
+    Deduplicate by python ``Cell`` object identity (not ``cell._tc``): in
+    some merged layouts python-docx surfaces distinct ``Cell`` instances
+    that share the same underlying ``_tc`` element, and deduping by
+    ``_tc`` would drop real rows (e.g. Key Facts label/value pairs).
+    """
     seen: set[int] = set()
     for row in table.rows:
         for cell in row.cells:
-            cid = id(cell._tc)
+            cid = id(cell)
             if cid in seen:
                 continue
             seen.add(cid)
@@ -325,19 +705,27 @@ def _iter_table_cells(table: Table) -> Iterator[_Cell]:
 
 def _parse_table(table: Table) -> ParsedTable:
     rows: list[tuple[str, ...]] = []
+    cell_image_rows: list[tuple[bool, ...]] = []
     has_images = False
     for row in table.rows:
         cells: list[str] = []
+        cell_imgs: list[bool] = []
         for cell in row.cells:
             cell_text = "\n".join(p.text for p in cell.paragraphs)
             cells.append(cell_text)
-            if not has_images:
-                for par in cell.paragraphs:
-                    if _has_inline_image(par._element):
-                        has_images = True
-                        break
+            cell_has_img = any(
+                _has_inline_image(par._element) for par in cell.paragraphs
+            )
+            cell_imgs.append(cell_has_img)
+            if cell_has_img:
+                has_images = True
         rows.append(tuple(cells))
-    return ParsedTable(rows=tuple(rows), has_images=has_images)
+        cell_image_rows.append(tuple(cell_imgs))
+    return ParsedTable(
+        rows=tuple(rows),
+        has_images=has_images,
+        cell_images=tuple(cell_image_rows),
+    )
 
 
 def _is_list_paragraph(paragraph: Paragraph) -> bool:
@@ -355,6 +743,175 @@ def _is_list_paragraph(paragraph: Paragraph) -> bool:
         return False
     name = style.name.lower()
     return name.startswith("list ") or name == "list bullet" or name == "list number"
+
+
+def _normalize_key_facts_line_heading(head: str) -> str:
+    """Strip bullets, '8A.', 'Only if applicable:', etc. before label compare."""
+    s = head.strip()
+    s = re.sub(r"^\s*\|+\s*", "", s)
+    s = re.sub(r"^[\u2022•\-\*\s]+", "", s)
+    s = re.sub(r"^only if applicable:\s*", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"^\d{1,2}[a-d]\s*[\.\)]\s*", "", s, flags=re.IGNORECASE)
+    return s.strip().lower()
+
+
+def _label_cell_to_key_facts_category(left: str) -> str | None:
+    """Map a Key Facts table label cell to canonical subsection id text."""
+    if not left or not left.strip():
+        return None
+    head = left.strip().split(":", 1)[0]
+    n = _normalize_key_facts_line_heading(head)
+    n = re.sub(r"\s*\(if applicable\)\s*$", "", n, flags=re.IGNORECASE).strip()
+    if n in ("business overview", "competition", "vertex overview", "notable changes"):
+        return n
+    return None
+
+
+def _iter_key_facts_label_value_pairs(section: Section) -> list[tuple[str, str]]:
+    """(label cell, value cell) for each row of every 2-column table in the section."""
+    pairs: list[tuple[str, str]] = []
+    for tbl in section.tables:
+        if tbl.num_cols < 2:
+            continue
+        for row in tbl.rows:
+            if len(row) < 2:
+                continue
+            pairs.append((row[0].strip(), row[1].strip()))
+    return pairs
+
+
+def _combined_key_facts_has_content(combined: Section) -> bool:
+    if combined.raw_text.strip():
+        return True
+    for tbl in combined.tables:
+        for row in tbl.rows:
+            if any(cell.strip() for cell in row):
+                return True
+    return False
+
+
+def _value_reads_as_vertex_overview(right: str) -> bool:
+    """Heuristic for Vertex copy when the label cell is left blank (common in templates)."""
+    t = right.lower()
+    if re.search(r"cards?\s+in\s+force", t):
+        return True
+    if "portfolio" in t and re.search(r"\d", t):
+        return True
+    if "vertex" in t and ("card" in t or "portfolio" in t or "pv" in t):
+        return True
+    return False
+
+
+def _extract_key_facts_category_from_tables(section: Section, category: str) -> str | None:
+    """Match Key Facts laid out as a 2-column Word table (label | body per row)."""
+    pairs = _iter_key_facts_label_value_pairs(section)
+    for left, right in pairs:
+        if not right.strip():
+            continue
+        lbl = _label_cell_to_key_facts_category(left)
+        if lbl == category:
+            return right.strip()
+    if category == "vertex overview":
+        for left, right in pairs:
+            if left.strip() or not right.strip():
+                continue
+            if _value_reads_as_vertex_overview(right):
+                return right.strip()
+        for left, right in pairs:
+            if left.strip() or not right.strip():
+                continue
+            return right.strip()
+    return None
+
+
+def _extract_key_facts_category_body_inline(raw: str, category: str) -> str | None:
+    """Return body for ``Label: body`` lines inside one cell / paragraph block."""
+    for line in (x.strip() for x in raw.split("\n") if x.strip()):
+        if ":" not in line:
+            continue
+        head, rest = line.split(":", 1)
+        norm = _normalize_key_facts_line_heading(head)
+        if "notable changes" in norm:
+            continue
+        if norm == category:
+            return rest.strip()
+    return None
+
+
+def _extract_key_facts_subsection_body(combined: Section, category: str) -> str | None:
+    """Prefer 2-column Key Facts table rows; fall back to inline ``Label:`` lines."""
+    from_tbl = _extract_key_facts_category_from_tables(combined, category)
+    if from_tbl is not None:
+        return from_tbl
+    return _extract_key_facts_category_body_inline(combined.raw_text, category)
+
+
+def _key_facts_subsection(
+    combined: Section | None,
+    section_id: str,
+    title: str,
+    order: int,
+    *,
+    category: str,
+    key_facts_tables: tuple[ParsedTable, ...] = (),
+) -> Section:
+    if combined is None or not _combined_key_facts_has_content(combined):
+        return Section(id=section_id, title=title, order=order, present=False)
+    body = _extract_key_facts_subsection_body(combined, category)
+    if not body or not body.strip():
+        return Section(id=section_id, title=title, order=order, present=False)
+    tables_out: tuple[ParsedTable, ...] = ()
+    if category == "business overview" and key_facts_tables:
+        tables_out = key_facts_tables
+    return Section(
+        id=section_id,
+        title=title,
+        order=order,
+        present=True,
+        raw_text=body,
+        tables=tables_out,
+    )
+
+
+def _key_facts_subsection_notable(
+    combined: Section | None, section_id: str, title: str, order: int
+) -> Section:
+    """Notable Changes is optional: always `present=True` so it is never
+    flagged as a missing section; empty body is normal."""
+    if combined is None or not _combined_key_facts_has_content(combined):
+        return Section(
+            id=section_id,
+            title=title,
+            order=order,
+            present=True,
+            raw_text="",
+        )
+    body = _extract_notable_changes_from_combined(combined)
+    return Section(
+        id=section_id,
+        title=title,
+        order=order,
+        present=True,
+        raw_text=body,
+    )
+
+
+def _extract_notable_changes_from_combined(section: Section) -> str:
+    from_tbl = _extract_key_facts_category_from_tables(section, "notable changes")
+    if from_tbl is not None:
+        return from_tbl
+    return _extract_notable_changes_body_inline(section.raw_text)
+
+
+def _extract_notable_changes_body_inline(key_facts_raw: str) -> str:
+    """Return text after the 'Notable Changes:' marker, or empty if absent."""
+    for paragraph in (p.strip() for p in key_facts_raw.split("\n") if p.strip()):
+        if "notable changes" not in paragraph.lower():
+            continue
+        match = _NOTABLE_CHANGES_BODY_RE.search(paragraph)
+        if match:
+            return match.group(1).strip()
+    return ""
 
 
 def _infer_client_name(title_text: str | None) -> str | None:

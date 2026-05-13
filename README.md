@@ -1,6 +1,6 @@
 # Vertex Brief Review Agent
 
-An agent that reviews Vertex client briefing `.docx` files for formatting, grammar, and structural compliance against the official 12-section template, and returns the required 3-column feedback table.
+An agent that reviews Vertex client briefing `.docx` files for formatting, grammar, and structural compliance against the official 15-row brief template (matching the take-home spec), and returns the required 3-column feedback table.
 
 Built for the Vertex North America BizOps team to scale brief review through the music festival peak.
 
@@ -21,8 +21,8 @@ flowchart LR
 
 The assessment mixes two very different rule types, and the agent treats them differently:
 
-- **Deterministic checks (regex / `python-docx` walks)** for everything verifiable from the bytes: spelling, duplicate words, month/year/deal/dollar/`US`/competitor abbreviations, single space after period, section presence, table column counts, line counts, header icon presence, title format. These are cheap, fast, and 100% reproducible.
-- **Semantic checks (Claude Sonnet 4.5 with structured tool output)** for the rules that genuinely require judgment: "proactive talking points with context and intent" (section 9), "expected concern AND suggested response" (section 10), product specificity in "Our Current Business" (section 7), and the substance of each Key Facts subsection (8A, 8B, 8C). One Claude call per rule, with prompt caching on the rule descriptions so repeat reviews stay under ~$0.05 per brief.
+- **Deterministic checks (regex / `python-docx` walks)** for everything verifiable from the bytes: spelling, duplicate words, month/year/deal/dollar/`US`/competitor abbreviations, single space after period, section presence, Key Facts category labels, table column counts, line counts, header icon presence, title format, attendee name line format. Formatting rules run on the **full** document text (body plus header paragraphs) and each hit is attributed to the narrowest containing section row. These checks are cheap, fast, and 100% reproducible.
+- **Semantic checks (Claude Sonnet 4.5 with structured tool output)** for rules that need judgment: client name **and type** (section 3), meeting objective clarity (4), client share metrics with dates (6), product specificity in "Our Current Business" (7), Key Facts subsections 8A–8C, executive messages (9), client topics (10), attendee bios and **“previously met” who/when/where** (11). One Claude call per rule, with prompt caching on the rule descriptions so repeat reviews stay under ~$0.05 per brief.
 
 Forcing Claude through a single tool definition (`record_findings`) means every response is structured JSON we can validate before it touches the output table. Temperature is pinned to 0 and prompts are deterministic, so the same brief produces the same review every time.
 
@@ -44,7 +44,7 @@ The app opens at <http://localhost:8501>. Upload any `.docx` brief, or pick one 
 pytest --cov=core
 ```
 
-40 tests, ~90% line coverage on `core/`. The semantic checker is exercised against a fake LLM client so the suite runs offline in under 2 seconds.
+45 tests, ~90% line coverage on `core/`. The semantic checker is exercised against a fake LLM client so the suite runs offline in under 2 seconds.
 
 ## Deploying the shareable link (Streamlit Community Cloud)
 
@@ -87,24 +87,29 @@ If you'd rather not host it, the same `streamlit run streamlit_app.py` command a
 
 ### Section structure (deterministic, column 3)
 
-- Section presence in template order; missing sections are still listed and flagged.
+- Section presence in template order (15 rows; the **What are the key facts about the client?** heading in Word is the umbrella for 8A–8D, not its own review row); missing sections are still listed and flagged.
+- Key Facts: each of Business Overview, Competition, and Vertex Overview must be **clearly labeled** in the table or inline copy (findings attach to the 8A / 8B / 8C row as appropriate).
 - Title format: `[Client Name] Meeting Brief`, capitalize only the first letter of each word.
-- 2-column tables for sections 3-7; 4-column attendee table for section 11.
-- Line limits per section (one line for sections 3 and 4; two lines for 5 and 6; three lines for Key Facts 8A/8B/8C; two lines for 8D; bullets in 9 and 10 ≤ 3 lines each; bio ≤ 7 lines).
+- 2-column tables for sections 3-7; 4-column attendee table for section 11. Attendee table must have headers `Name/Titles | Photo | Bio | Previously met with Vertex exec?`.
+- Line limits per section (one line for sections 3 and 4; two lines for 5 and 6; three lines for Key Facts 8A/8B/8C; two lines for 8D; bullets in 9 and 10 ≤ 3 lines each; bio ≤ 7 lines; "Previously met" ≤ 7 lines).
 - Bullet counts: ≤ 5 for executive messages, ≤ 3 for client topics.
-- Attendee rows must include name, pronunciation, title, form of address, email, photo.
+- Each attendee row's Name/Titles cell must include Name, Pronunciation (first line `Name (PRONUNCIATION)`), Title, Preferred form of address, and Email — each is flagged individually if missing.
+- Each attendee row's Photo cell must contain an image (per-row, not just somewhere in the table). A photo cell with both an image and stray caption/placeholder text is flagged as potentially unclear.
 - Header icon must exist in the document header.
 - Vertex attendee line follows `[Name], [Title, Team Name]` or states `No other Vertex attendees`.
 
 ### Semantic substance (Claude, column 3)
 
+- **Section 3**: official client name plus issuer / acquirer / enabler / merchant / fintech classification.
+- **Section 4**: meeting objective clearly states the purpose of the meeting.
+- **Section 6**: Vertex share and client overall share (revenue or PV) **as of dated** reference points.
 - **Section 7**: deals must name specific products, not vague references.
 - **Section 8A**: business overview must be substantive (not generic platitudes).
 - **Section 8B**: competition must include share by network, RFPs, or other competitive dynamics.
 - **Section 8C**: Vertex overview must include both cards in force AND portfolio size.
 - **Section 9**: each bullet must be a proactive talking point with both context and intent.
 - **Section 10**: each bullet must include both the expected concern AND a suggested response.
-- **Section 11**: each attendee bio must be 1-2 substantive sentences.
+- **Section 11**: each attendee bio must be 1–2 substantive sentences; each “Previously met with Vertex exec?” cell must convey who, when, and where (or explicitly state no prior meeting).
 
 ## What I would do differently if the constraints lifted (interview discussion)
 
@@ -141,7 +146,7 @@ visa-assessment/
       renderer.py             # markdown + DataFrame + .docx + CSV
   tests/
     fixtures/builder.py       # synthetic clean and dirty briefs
-    test_*.py                 # 40 tests, ~90% coverage
+    test_*.py                 # 45 tests, ~90% coverage
   pyproject.toml
   requirements.txt            # for Streamlit Cloud
   runtime.txt                 # Python 3.11
@@ -151,7 +156,7 @@ visa-assessment/
 
 ## Notes on line counting
 
-Word "lines" depend on font, page width, and rendering. The agent estimates lines using `\n` splits plus a fixed 95-character soft-wrap budget. The estimate is shown in every line-limit finding (`"estimated 5"`) so the reviewer can sanity check rather than trust a black box. If the BizOps team uses a non-default page width, this constant is one tunable knob in `core/checkers/structure.py`.
+Word "lines" depend on font, page width, and rendering. The agent still *counts* lines using `\n` splits plus a fixed 95-character soft-wrap budget (`CHARS_PER_LINE` in `core/checkers/structure.py`), but line-limit findings only state the rule (for example, "must not exceed 3 lines") without echoing the internal count. Tune `CHARS_PER_LINE` if your template uses a very different page width.
 
 ## License
 

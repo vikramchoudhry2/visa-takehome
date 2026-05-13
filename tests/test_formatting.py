@@ -57,4 +57,4 @@ def test_competitor_abbreviation_attribution(dirty_brief: Brief) -> None:
     findings = check_formatting(dirty_brief)
     competitor_findings = [f for f in findings if f.rule_id == "COMPETITOR_ABBREVIATION"]
     assert competitor_findings, "no competitor findings"
-    assert all(f.section_id == "08_key_facts" for f in competitor_findings)
+    assert all(f.section_id == "08b_competition" for f in competitor_findings)

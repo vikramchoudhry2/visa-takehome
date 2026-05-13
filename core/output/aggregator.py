@@ -1,6 +1,6 @@
 """Aggregate raw findings into the per-section `ReviewReport`.
 
-Always emits all 12 sections in template order, even when no findings
+Always emits all 15 sections in template order, even when no findings
 exist for that section, so the output table has consistent shape.
 """
 

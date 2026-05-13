@@ -4,8 +4,10 @@ The required output format from the assessment is a 3-column table with
 headers:
   Brief section | Formatting and Grammar Feedback | Brief Section Feedback
 
-Columns 2 and 3 use bullet points. Missing sections are still listed
-and flagged. Compliant sections show "No issues found".
+Columns 2 and 3 list feedback as markdown bullets: each item is a line
+starting with ``- ``, and consecutive bullets are separated by a single
+newline. Missing sections are still listed and flagged. Compliant sections
+show ``- No issues found``.
 """
 
 from __future__ import annotations
@@ -92,19 +94,21 @@ def to_docx(report: ReviewReport) -> bytes:
 
 
 def _format_bullets(findings: tuple, missing: bool) -> str:
+    """One markdown-style bullet per line; consecutive bullets separated by a single newline."""
     if missing and not findings:
         return f"- {SECTION_MISSING}"
     if not findings:
-        return NO_ISSUES
+        return f"- {NO_ISSUES}"
     return "\n".join(f"- {_finding_text(f)}" for f in findings)
 
 
 def _format_bullets_md(findings: tuple, missing: bool) -> str:
+    """Same bullet layout as `_format_bullets`, with pipe characters escaped for markdown tables."""
     if missing and not findings:
-        return f"- {SECTION_MISSING}"
+        return f"- {SECTION_MISSING.replace('|', '\\|')}"
     if not findings:
-        return NO_ISSUES
-    return "<br>".join(f"- {_finding_text(f).replace('|', '\\|')}" for f in findings)
+        return f"- {NO_ISSUES.replace('|', '\\|')}"
+    return "\n".join(f"- {_finding_text(f).replace('|', '\\|')}" for f in findings)
 
 
 def _finding_text(finding) -> str:
@@ -120,6 +124,7 @@ def _write_bullet_cell(cell, findings: tuple, missing: bool) -> None:
         return
     if not findings:
         paragraphs[0].text = NO_ISSUES
+        paragraphs[0].style = cell.part.document.styles["List Bullet"]
         return
     first = True
     for f in findings:

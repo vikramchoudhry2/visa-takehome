@@ -1,4 +1,5 @@
-"""Semantic (LLM-backed) checkers for sections 7, 8A, 8B, 8C, 9, 10, 11.
+"""Semantic (LLM-backed) checkers for substance/judgment rows: 3–7, Key Facts
+(8A–8D where applicable), 9–12, plus client markets (5) and Vertex attendees (12).
 
 The semantic checker accepts an `AnthropicClient` (or anything with the
 same `.evaluate(...)` shape, which makes mocking trivial in tests).
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from core.checkers.structure import _value_cell_text
 from core.llm.client import AnthropicClient, LLMResult, LLMUnavailable
 from core.llm.prompts import SEMANTIC_RULES, SemanticRule
 from core.models import Brief, Finding
@@ -42,6 +44,14 @@ def check_semantic(
     for rule in SEMANTIC_RULES:
         section = brief.section(rule.section_id)
         if section is None or not section.present or not section.raw_text.strip():
+            continue
+        # Section 12: `raw_text` includes the template label even when the
+        # value cell is empty, so `raw_text.strip()` is non-empty while the
+        # substantive body is blank. Deterministic `VERTEX_ATTENDEE_MISSING`
+        # already covers that; skip the LLM rule to avoid duplicate bullets.
+        if rule.section_id == "12_vertex_attendees" and not _value_cell_text(
+            section
+        ).strip():
             continue
         result = _evaluate_rule(client, rule, section.raw_text)
         if result.passed and not result.findings:

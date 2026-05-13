@@ -62,6 +62,45 @@ def test_semantic_skips_missing_sections() -> None:
     assert fake.calls == []
 
 
+def test_semantic_skips_vertex_substance_when_value_cell_empty() -> None:
+    """Regression: empty Vertex value cell still yields non-empty `raw_text`
+    (the template label). The LLM rule must not run or it duplicates
+    `VERTEX_ATTENDEE_MISSING` with a second near-identical bullet."""
+    from io import BytesIO
+
+    from docx import Document
+
+    from core.docx_parser import parse_brief
+
+    doc = Document()
+    doc.add_paragraph("Test Co Meeting Brief")
+    table = doc.add_table(rows=1, cols=2)
+    table.rows[0].cells[0].text = "Who is joining me from Vertex?"
+    table.rows[0].cells[1].text = ""
+    buf = BytesIO()
+    doc.save(buf)
+    brief = parse_brief(buf.getvalue())
+    fake = FakeClient(
+        {
+            "SEC12_VERTEX_ATTENDEES_SUBSTANCE": LLMResult(
+                passed=False,
+                findings=(
+                    LLMFinding(
+                        message=(
+                            'Section is empty. Must list Vertex attendees with name '
+                            'and title/team or state "No other Vertex attendees".'
+                        ),
+                        evidence=None,
+                    ),
+                ),
+            ),
+        }
+    )
+    findings = check_semantic(brief, fake)
+    assert "SEC12_VERTEX_ATTENDEES_SUBSTANCE" not in fake.calls
+    assert findings == []
+
+
 def test_semantic_no_client_returns_empty(monkeypatch, dirty_brief: Brief) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     findings = check_semantic(dirty_brief, client=None)

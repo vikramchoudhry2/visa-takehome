@@ -21,7 +21,7 @@ def test_pipeline_clean_brief_produces_no_findings(clean_bytes: bytes) -> None:
     outcome = run_review(clean_bytes, enable_semantic=False)
     assert summary_counts(outcome.report)["formatting"] == 0
     assert summary_counts(outcome.report)["section"] == 0
-    assert summary_counts(outcome.report)["clean_sections"] == 12
+    assert summary_counts(outcome.report)["clean_sections"] == 15
 
 
 def test_pipeline_dirty_brief_finds_issues(dirty_bytes: bytes) -> None:
@@ -62,9 +62,10 @@ def test_renderer_dataframe_has_expected_shape(clean_bytes: bytes) -> None:
     outcome = run_review(clean_bytes, enable_semantic=False)
     df = to_dataframe(outcome.report)
     assert list(df.columns) == list(COLUMN_HEADERS)
-    assert len(df) == 12
-    assert (df.iloc[:, 1] == NO_ISSUES).all()
-    assert (df.iloc[:, 2] == NO_ISSUES).all()
+    assert len(df) == 15
+    no_issues_bullet = f"- {NO_ISSUES}"
+    assert (df.iloc[:, 1] == no_issues_bullet).all()
+    assert (df.iloc[:, 2] == no_issues_bullet).all()
 
 
 def test_renderer_flags_missing_sections_in_table(monkeypatch) -> None:
@@ -86,7 +87,7 @@ def test_renderer_flags_missing_sections_in_table(monkeypatch) -> None:
     df = to_dataframe(outcome.report)
     section12 = df[df[COLUMN_HEADERS[0]] == "Who is joining me from Vertex?"].iloc[0]
     section_text = section12[COLUMN_HEADERS[2]]
-    assert section_text != NO_ISSUES
+    assert section_text != f"- {NO_ISSUES}"
     assert "missing" in section_text.lower()
     _ = SECTION_MISSING
 

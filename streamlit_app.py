@@ -9,6 +9,7 @@ local dev reads it from the environment or `.streamlit/secrets.toml`.
 
 from __future__ import annotations
 
+import html
 import os
 import time
 
@@ -23,6 +24,91 @@ from core.output.renderer import (
     to_markdown,
 )
 from core.pipeline import run_review
+
+_REVIEW_TABLE_CSS = """
+<style>
+/* Light, high-contrast card so the table stays readable on Streamlit light or dark UI. */
+.vb-review-wrap {
+  overflow-x: auto;
+  margin: 0.25rem 0 1rem 0;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+}
+.vb-review-table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+  font-size: 0.92rem;
+  line-height: 1.55;
+  background: #ffffff;
+  color: #1e293b;
+}
+.vb-review-table thead th {
+  text-align: left;
+  padding: 0.7rem 0.95rem;
+  font-weight: 600;
+  border: 1px solid #e2e8f0;
+  background: #f1f5f9;
+  color: #0f172a;
+  border-bottom: 2px solid #cbd5e1;
+}
+.vb-review-table tbody td {
+  padding: 0.75rem 0.95rem;
+  border: 1px solid #e8edf2;
+  vertical-align: top;
+  color: #334155;
+}
+.vb-review-table tbody tr:nth-child(odd) td { background: #fcfdfe; }
+.vb-review-table tbody tr:nth-child(even) td { background: #f8fafc; }
+.vb-review-table td.vb-col-section {
+  font-weight: 600;
+  width: 22%;
+  min-width: 11rem;
+  color: #0f172a;
+  background: #f8fafc !important;
+  border-right: 2px solid #e2e8f0;
+}
+.vb-review-table td.vb-col-feedback {
+  font-weight: 400;
+  color: #334155;
+}
+</style>
+"""
+
+
+def _review_table_html(df) -> str:
+    """Build a readable HTML table; cell text is escaped, newlines preserved as <br>."""
+    h0, h1, h2 = COLUMN_HEADERS
+
+    def cell(text: object) -> str:
+        return html.escape(str(text), quote=True).replace("\n", "<br>")
+
+    head = (
+        "<thead><tr>"
+        f"<th>{html.escape(h0)}</th>"
+        f"<th>{html.escape(h1)}</th>"
+        f"<th>{html.escape(h2)}</th>"
+        "</tr></thead>"
+    )
+    body_rows: list[str] = []
+    for _, row in df.iterrows():
+        body_rows.append(
+            "<tr>"
+            f'<td class="vb-col-section">{cell(row[h0])}</td>'
+            f'<td class="vb-col-feedback">{cell(row[h1])}</td>'
+            f'<td class="vb-col-feedback">{cell(row[h2])}</td>'
+            "</tr>"
+        )
+    return (
+        _REVIEW_TABLE_CSS
+        + '<div class="vb-review-wrap"><table class="vb-review-table">'
+        + head
+        + "<tbody>"
+        + "".join(body_rows)
+        + "</tbody></table></div>"
+    )
 
 
 def _bootstrap_api_key() -> None:
@@ -136,12 +222,7 @@ def main() -> None:
 
     st.subheader("Review table")
     df = to_dataframe(outcome.report)
-    st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={col: st.column_config.TextColumn(width="medium") for col in COLUMN_HEADERS},
-    )
+    st.markdown(_review_table_html(df), unsafe_allow_html=True)
 
     st.subheader("Downloads")
     download_cols = st.columns(3)

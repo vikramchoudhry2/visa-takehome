@@ -262,13 +262,15 @@ def build_dirty_brief() -> bytes:
         )
 
     doc.add_paragraph("Who am I meeting with?")
-    table = doc.add_table(rows=2, cols=3)
-    table.rows[0].cells[0].text = "Name"
-    table.rows[0].cells[1].text = "Bio"
-    table.rows[0].cells[2].text = "Met before?"
+    table = doc.add_table(rows=2, cols=4)
+    table.rows[0].cells[0].text = "Name/Titles"
+    table.rows[0].cells[1].text = "Photo"
+    table.rows[0].cells[2].text = "Bio"
+    table.rows[0].cells[3].text = "Previously met with Vertex exec?"
     table.rows[1].cells[0].text = "Jane Doe"
-    table.rows[1].cells[1].text = "Short bio."
-    table.rows[1].cells[2].text = "No"
+    table.rows[1].cells[1].text = ""
+    table.rows[1].cells[2].text = "Short bio."
+    table.rows[1].cells[3].text = "No"
 
     doc.add_paragraph("Who is joining me from Vertex?")
     doc.add_paragraph("Just Alex Smith")
