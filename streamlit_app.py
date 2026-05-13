@@ -25,6 +25,15 @@ from core.output.renderer import (
 )
 from core.pipeline import run_review
 
+_HIDE_STREAMLIT_SIDEBAR_CSS = """
+<style>
+/* No `st.sidebar` content — hide the empty sidebar rail and collapse control. */
+[data-testid="stSidebar"] { display: none !important; }
+[data-testid="stSidebarCollapsedControl"] { display: none !important; }
+[data-testid="collapsedControl"] { display: none !important; }
+</style>
+"""
+
 _REVIEW_TABLE_CSS = """
 <style>
 /* Light, high-contrast card so the table stays readable on Streamlit light or dark UI. */
@@ -130,6 +139,8 @@ def main() -> None:
     )
     _bootstrap_api_key()
 
+    st.markdown(_HIDE_STREAMLIT_SIDEBAR_CSS, unsafe_allow_html=True)
+
     st.title("Vertex Brief Review Agent")
     st.caption(
         "Upload a client briefing .docx. The agent runs deterministic "
@@ -137,8 +148,8 @@ def main() -> None:
         "and returns the standard 3-column review table."
     )
 
-    with st.sidebar:
-        st.subheader("Settings")
+    opt_left, opt_right = st.columns(2)
+    with opt_left:
         enable_semantic = st.toggle(
             "Run semantic checks (Claude)",
             value=True,
@@ -147,21 +158,19 @@ def main() -> None:
                 "checks add ~5-10s and require ANTHROPIC_API_KEY."
             ),
         )
-        st.divider()
-        st.subheader("Try it without a brief")
+    with opt_right:
         demo_choice = st.selectbox(
-            "Load a built-in demo brief",
+            "Try it without a brief (built-in demo)",
             ["(none)", "Clean Acme brief", "Dirty Acme brief"],
+            help=(
+                "Synthetic fixtures from the test suite. The dirty version "
+                "intentionally violates one of every rule."
+            ),
         )
-        st.caption(
-            "These are synthetic fixtures used in the test suite. The "
-            "'dirty' version intentionally violates one of every rule."
-        )
-        st.divider()
-        st.markdown(
-            "Built for the Vertex BizOps team. Source: "
-            "[github.com](https://github.com)."
-        )
+    st.caption(
+        "Built for the Vertex BizOps team. Source: "
+        "[github.com](https://github.com)."
+    )
 
     upload = st.file_uploader(
         "Upload a client briefing (.docx)",
@@ -185,7 +194,7 @@ def main() -> None:
             file_label = "demo_dirty_acme.docx"
 
     if file_bytes is None:
-        st.info("Upload a .docx above or pick a demo from the sidebar to begin.")
+        st.info("Upload a .docx above or choose a built-in demo to begin.")
         return
 
     if not st.button("Run review", type="primary", use_container_width=True):
