@@ -148,29 +148,7 @@ def main() -> None:
         "and returns the standard 3-column review table."
     )
 
-    opt_left, opt_right = st.columns(2)
-    with opt_left:
-        enable_semantic = st.toggle(
-            "Run semantic checks (Claude)",
-            value=True,
-            help=(
-                "Disable to run only the deterministic rules. Semantic "
-                "checks add ~5-10s and require ANTHROPIC_API_KEY."
-            ),
-        )
-    with opt_right:
-        demo_choice = st.selectbox(
-            "Try it without a brief (built-in demo)",
-            ["(none)", "Clean Acme brief", "Dirty Acme brief"],
-            help=(
-                "Synthetic fixtures from the test suite. The dirty version "
-                "intentionally violates one of every rule."
-            ),
-        )
-    st.caption(
-        "Built for the Vertex BizOps team. Source: "
-        "[github.com](https://github.com)."
-    )
+    enable_semantic = True
 
     upload = st.file_uploader(
         "Upload a client briefing (.docx)",
@@ -183,18 +161,9 @@ def main() -> None:
     if upload is not None:
         file_bytes = upload.read()
         file_label = upload.name
-    elif demo_choice and demo_choice != "(none)":
-        from tests.fixtures.builder import build_clean_brief, build_dirty_brief
-
-        if demo_choice == "Clean Acme brief":
-            file_bytes = build_clean_brief()
-            file_label = "demo_clean_acme.docx"
-        else:
-            file_bytes = build_dirty_brief()
-            file_label = "demo_dirty_acme.docx"
 
     if file_bytes is None:
-        st.info("Upload a .docx above or choose a built-in demo to begin.")
+        st.info("Upload a .docx above to begin.")
         return
 
     if not st.button("Run review", type="primary", use_container_width=True):
